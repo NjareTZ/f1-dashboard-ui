@@ -25,21 +25,24 @@ export default function App() {
   const [debugLog, setDebugLog] = useState([]);
   const [replayData, setReplayData] = useState({});
   const [liveSession, setLiveSession] = useState(null);
-  const [liveChecked, setLiveChecked] = useState(false); // NEW — gate
+  const [liveChecked, setLiveChecked] = useState(false);
 
   const log = (msg) => {
     console.log(msg);
     setDebugLog(prev => [...prev.slice(-10), msg]);
   };
 
-  // STEP 1 — check for live session FIRST, then set gate open
+  // STEP 1 — check for live session
   useEffect(() => {
     log("Checking for live session...");
     fetch("https://api.openf1.org/v1/sessions?session_type=Race&limit=5")
       .then(r => r.json())
       .then(data => {
+        // SAFE: make sure data is an array
+        const sessions = Array.isArray(data) ? data : [];
+        log(`Got ${sessions.length} sessions`);
         const now = new Date();
-        const live = data.find(s => {
+        const live = sessions.find(s => {
           const start = new Date(s.date_start);
           const end = new Date(s.date_end);
           return now >= start && now <= end;
@@ -52,14 +55,14 @@ export default function App() {
         }
       })
       .catch(err => log(`Live check failed: ${err.message}`))
-      .finally(() => setLiveChecked(true)); // always open gate
+      .finally(() => setLiveChecked(true));
   }, []);
 
   // STEP 2 — only run after live check is done
   useEffect(() => {
     if (!liveChecked) return;
-    log(`Loading ${mode} session...`);
     loadSession(mode);
+  // eslint-disable-next-line
   }, [liveChecked, mode]);
 
   function loadSession(targetMode) {
@@ -72,7 +75,7 @@ export default function App() {
     }
 
     if (targetMode === "live" && !liveSession) {
-      log("No live session available — falling back to replay");
+      log("No live session — falling back to replay");
     }
 
     log("Fetching last race from Jolpi...");
@@ -81,18 +84,27 @@ export default function App() {
       .then(jolpiData => {
         const race = jolpiData?.MRData?.RaceTable?.Races?.[0];
         log(`Jolpi race: ${race?.raceName || "not found"}`);
+        const circuitName = race?.Circuit?.circuitName || "Unknown Circuit";
+        const raceName = race?.raceName || "Last Race";
 
+        log("Fetching OpenF1 sessions...");
         return fetch("https://api.openf1.org/v1/sessions?session_type=Race&limit=20")
           .then(r => r.json())
-          .then(sessions => {
+          .then(rawSessions => {
+            // SAFE: make sure it is an array
+            const sessions = Array.isArray(rawSessions) ? rawSessions : [];
+            log(`Got ${sessions.length} OpenF1 sessions`);
+
             const completed = sessions
               .filter(s => new Date(s.date_end) < new Date())
               .sort((a, b) => new Date(b.date_end) - new Date(a.date_end));
+
             const best = completed[0];
-            log(`Best OpenF1 session: ${best?.circuit_short_name} (key: ${best?.session_key})`);
+            log(`Best session: ${best?.circuit_short_name} (key: ${best?.session_key})`);
+
             if (best) {
-              best.circuitLabel = race?.Circuit?.circuitName || best.circuit_short_name;
-              best.raceLabel = race?.raceName || "Last Race";
+              best.circuitLabel = circuitName;
+              best.raceLabel = raceName;
               best.jolpiResults = race?.Results || [];
             }
             return best;
@@ -116,12 +128,15 @@ export default function App() {
 
   function initSession(sessionData, targetMode) {
     log(`Loading drivers for session ${sessionData.session_key}...`);
-    setStatus(`Loading drivers...`);
+    setStatus("Loading drivers...");
 
     fetch(`https://api.openf1.org/v1/drivers?session_key=${sessionData.session_key}`)
       .then(r => r.json())
-      .then(driverList => {
+      .then(rawDrivers => {
+        // SAFE: make sure it is an array
+        const driverList = Array.isArray(rawDrivers) ? rawDrivers : [];
         log(`Got ${driverList.length} drivers`);
+
         const map = {};
         driverList.forEach(d => {
           map[d.driver_number] = {
@@ -159,8 +174,18 @@ export default function App() {
 
     fetch(`https://api.openf1.org/v1/location?session_key=${sessionKey}&limit=5000`)
       .then(r => r.json())
-      .then(positions => {
+      .then(rawPositions => {
+        // SAFE: make sure it is an array
+        const positions = Array.isArray(rawPositions) ? rawPositions : [];
         log(`Got ${positions.length} position entries`);
+
+        if (positions.length === 0) {
+          log("WARNING: No position data returned");
+          setStatus("No position data for this session");
+          setLoading(false);
+          return;
+        }
+
         const byTime = {};
         positions.forEach(p => {
           if (!byTime[p.date]) byTime[p.date] = [];
@@ -186,6 +211,7 @@ export default function App() {
       index++;
       if (index >= replayData.timestamps.length) {
         clearInterval(interval);
+        log("Replay finished");
         return;
       }
       const frame = replayData.byTime[replayData.timestamps[index]];
@@ -203,6 +229,7 @@ export default function App() {
         };
       });
       setCars(updated);
+    // eslint-disable-next-line
     }, 200);
     return () => clearInterval(interval);
   }, [replayData, drivers]);
@@ -211,7 +238,8 @@ export default function App() {
     const interval = setInterval(() => {
       fetch(`https://api.openf1.org/v1/location?session_key=${sessionKey}&limit=100`)
         .then(r => r.json())
-        .then(data => {
+        .then(rawData => {
+          const data = Array.isArray(rawData) ? rawData : [];
           const latest = {};
           data.forEach(e => { latest[e.driver_number] = e; });
           const updated = Object.values(latest).map(entry => {
@@ -278,7 +306,9 @@ export default function App() {
           DEBUG — {status}
         </div>
         {debugLog.map((l, i) => (
-          <div key={i} style={{ color: "#888" }}>{l}</div>
+          <div key={i} style={{ color: l.includes("ERROR") || l.includes("error") ? "#ff4444" : "#888" }}>
+            {l}
+          </div>
         ))}
       </div>
 

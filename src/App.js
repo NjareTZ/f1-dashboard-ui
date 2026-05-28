@@ -1,49 +1,33 @@
 import { useEffect, useState } from "react";
-
-function Track({ cars }) {
-  return (
-    <div style={{ width: "100%", height: "600px", background: "#111", position: "relative" }}>
-      {cars.map((car) => (
-        <div
-          key={car.driver}
-          style={{
-            position: "absolute",
-            left: car.x,
-            top: car.y,
-            width: 20,
-            height: 20,
-            borderRadius: "50%",
-            background: "red",
-            color: "white",
-            fontSize: 10,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center"
-          }}
-        >
-          {car.driver}
-        </div>
-      ))}
-    </div>
-  );
-}
+import Track from "./Track";
 
 export default function App() {
   const [cars, setCars] = useState([]);
 
-  // TEMP DEMO DATA (so you see movement immediately)
   useEffect(() => {
+    // 🔥 DEMO MODE (so you see movement immediately)
     const interval = setInterval(() => {
       setCars([
         {
           driver: 44,
-          x: Math.random() * 800,
-          y: Math.random() * 400
+          number: 44,
+          x: Math.random() * 900,
+          y: Math.random() * 500,
+          color: "red"
         },
         {
           driver: 16,
-          x: Math.random() * 800,
-          y: Math.random() * 400
+          number: 16,
+          x: Math.random() * 900,
+          y: Math.random() * 500,
+          color: "blue"
+        },
+        {
+          driver: 1,
+          number: 1,
+          x: Math.random() * 900,
+          y: Math.random() * 500,
+          color: "yellow"
         }
       ]);
     }, 1000);
@@ -52,10 +36,11 @@ export default function App() {
   }, []);
 
   return (
-    <div>
-      <h2 style={{ color: "white", textAlign: "center" }}>
-        F1 Live Dashboard (Demo Mode)
+    <div style={{ padding: 20 }}>
+      <h2 style={{ textAlign: "center" }}>
+        🏁 F1 Live Dashboard (Step 7 Demo)
       </h2>
+
       <Track cars={cars} />
     </div>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import Track from "./Track";
 import Leaderboard from "./Leaderboard";
 
@@ -18,17 +18,23 @@ const TEAM_COLORS = {
 export default function App() {
   const [cars, setCars] = useState([]);
   const [drivers, setDrivers] = useState({});
-  const [session, setSession] = useState(null);
   const [circuit, setCircuit] = useState(null);
-  const [mode, setMode] = useState("replay"); // "replay" or "live"
+  const [mode, setMode] = useState("replay");
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("Loading...");
-  const [replayIndex, setReplayIndex] = useState(0);
+  const [status, setStatus] = useState("Starting...");
+  const [debugLog, setDebugLog] = useState([]);
   const [replayData, setReplayData] = useState({});
   const [liveSession, setLiveSession] = useState(null);
+  const [liveChecked, setLiveChecked] = useState(false); // NEW — gate
 
-  // STEP 1 — check if there is a live session right now
+  const log = (msg) => {
+    console.log(msg);
+    setDebugLog(prev => [...prev.slice(-10), msg]);
+  };
+
+  // STEP 1 — check for live session FIRST, then set gate open
   useEffect(() => {
+    log("Checking for live session...");
     fetch("https://api.openf1.org/v1/sessions?session_type=Race&limit=5")
       .then(r => r.json())
       .then(data => {
@@ -39,65 +45,83 @@ export default function App() {
           return now >= start && now <= end;
         });
         if (live) {
+          log(`Live session found: ${live.circuit_short_name}`);
           setLiveSession(live);
+        } else {
+          log("No live session — using replay mode");
         }
       })
-      .catch(() => {});
+      .catch(err => log(`Live check failed: ${err.message}`))
+      .finally(() => setLiveChecked(true)); // always open gate
   }, []);
 
-  // STEP 2 — load session based on mode
-  const loadSession = useCallback((targetMode) => {
+  // STEP 2 — only run after live check is done
+  useEffect(() => {
+    if (!liveChecked) return;
+    log(`Loading ${mode} session...`);
+    loadSession(mode);
+  }, [liveChecked, mode]);
+
+  function loadSession(targetMode) {
     setLoading(true);
-    setStatus(targetMode === "live" ? "Loading live session..." : "Loading last race...");
 
     if (targetMode === "live" && liveSession) {
+      log(`Using live session: ${liveSession.session_key}`);
       initSession(liveSession, "live");
-    } else {
-      // fetch last completed race from Jolpi API
-      fetch("https://api.jolpi.ca/ergast/f1/current/last/results.json")
-        .then(r => r.json())
-        .then(jolpiData => {
-          const race = jolpiData?.MRData?.RaceTable?.Races?.[0];
-          const circuitName = race?.Circuit?.circuitName || "Unknown Circuit";
-          const raceName = race?.raceName || "Last Race";
-
-          // now get matching OpenF1 session
-          return fetch(`https://api.openf1.org/v1/sessions?session_type=Race&limit=20`)
-            .then(r => r.json())
-            .then(sessions => {
-              // pick the most recent completed race session
-              const completed = sessions
-                .filter(s => new Date(s.date_end) < new Date())
-                .sort((a, b) => new Date(b.date_end) - new Date(a.date_end));
-              const best = completed[0];
-              if (best) {
-                best.circuitLabel = circuitName;
-                best.raceLabel = raceName;
-                best.jolpiResults = race?.Results || [];
-              }
-              return best;
-            });
-        })
-        .then(sessionData => {
-          if (sessionData) initSession(sessionData, "replay");
-          else setStatus("No session found");
-        })
-        .catch(() => setStatus("Failed to load session"));
+      return;
     }
-  }, [liveSession]);
 
-  useEffect(() => {
-    loadSession(mode);
-  }, [mode]);
+    if (targetMode === "live" && !liveSession) {
+      log("No live session available — falling back to replay");
+    }
 
-  // STEP 3 — init a session: load drivers + circuit info
+    log("Fetching last race from Jolpi...");
+    fetch("https://api.jolpi.ca/ergast/f1/current/last/results.json")
+      .then(r => r.json())
+      .then(jolpiData => {
+        const race = jolpiData?.MRData?.RaceTable?.Races?.[0];
+        log(`Jolpi race: ${race?.raceName || "not found"}`);
+
+        return fetch("https://api.openf1.org/v1/sessions?session_type=Race&limit=20")
+          .then(r => r.json())
+          .then(sessions => {
+            const completed = sessions
+              .filter(s => new Date(s.date_end) < new Date())
+              .sort((a, b) => new Date(b.date_end) - new Date(a.date_end));
+            const best = completed[0];
+            log(`Best OpenF1 session: ${best?.circuit_short_name} (key: ${best?.session_key})`);
+            if (best) {
+              best.circuitLabel = race?.Circuit?.circuitName || best.circuit_short_name;
+              best.raceLabel = race?.raceName || "Last Race";
+              best.jolpiResults = race?.Results || [];
+            }
+            return best;
+          });
+      })
+      .then(sessionData => {
+        if (sessionData) {
+          initSession(sessionData, "replay");
+        } else {
+          log("ERROR: No session data found");
+          setStatus("No session found");
+          setLoading(false);
+        }
+      })
+      .catch(err => {
+        log(`Load session error: ${err.message}`);
+        setStatus(`Error: ${err.message}`);
+        setLoading(false);
+      });
+  }
+
   function initSession(sessionData, targetMode) {
-    setSession(sessionData);
-    setStatus(`Loading drivers for ${sessionData.raceLabel || sessionData.circuit_short_name}...`);
+    log(`Loading drivers for session ${sessionData.session_key}...`);
+    setStatus(`Loading drivers...`);
 
     fetch(`https://api.openf1.org/v1/drivers?session_key=${sessionData.session_key}`)
       .then(r => r.json())
       .then(driverList => {
+        log(`Got ${driverList.length} drivers`);
         const map = {};
         driverList.forEach(d => {
           map[d.driver_number] = {
@@ -109,8 +133,6 @@ export default function App() {
           };
         });
         setDrivers(map);
-
-        // set circuit info
         setCircuit({
           name: sessionData.circuitLabel || sessionData.circuit_short_name,
           country: sessionData.country_name,
@@ -125,71 +147,66 @@ export default function App() {
           startLiveFeed(sessionData.session_key, map);
         }
       })
-      .catch(() => setStatus("Failed to load drivers"));
+      .catch(err => {
+        log(`Drivers error: ${err.message}`);
+        setLoading(false);
+      });
   }
 
-  // STEP 4 — load replay positions
   function loadReplayData(sessionKey, driverMap, jolpiResults) {
+    log(`Loading positions for session ${sessionKey}...`);
     setStatus("Loading race positions...");
 
     fetch(`https://api.openf1.org/v1/location?session_key=${sessionKey}&limit=5000`)
       .then(r => r.json())
       .then(positions => {
-        // group by timestamp
+        log(`Got ${positions.length} position entries`);
         const byTime = {};
         positions.forEach(p => {
-          const t = p.date;
-          if (!byTime[t]) byTime[t] = [];
-          byTime[t].push(p);
+          if (!byTime[p.date]) byTime[p.date] = [];
+          byTime[p.date].push(p);
         });
-
         const timestamps = Object.keys(byTime).sort();
+        log(`${timestamps.length} timestamps — replay ready`);
         setReplayData({ byTime, timestamps, jolpiResults });
-        setReplayIndex(0);
         setLoading(false);
         setStatus("REPLAY");
       })
-      .catch(() => setStatus("Failed to load positions"));
+      .catch(err => {
+        log(`Positions error: ${err.message}`);
+        setLoading(false);
+      });
   }
 
-  // STEP 5 — replay loop
+  // replay loop
   useEffect(() => {
-    if (mode !== "replay" || !replayData.timestamps) return;
-
+    if (mode !== "replay" || !replayData.timestamps?.length) return;
+    let index = 0;
     const interval = setInterval(() => {
-      setReplayIndex(prev => {
-        const next = prev + 1;
-        if (next >= replayData.timestamps.length) {
-          clearInterval(interval);
-          return prev;
-        }
-
-        const t = replayData.timestamps[next];
-        const frame = replayData.byTime[t];
-
-        const updated = frame.map(entry => {
-          const d = drivers[entry.driver_number] || {};
-          return {
-            driver: entry.driver_number,
-            number: entry.driver_number,
-            name: d.name || `#${entry.driver_number}`,
-            short: d.short || `${entry.driver_number}`,
-            team: d.team || "",
-            color: d.color || "#ffffff",
-            x: entry.x,
-            y: entry.y,
-          };
-        });
-
-        setCars(updated);
-        return next;
+      index++;
+      if (index >= replayData.timestamps.length) {
+        clearInterval(interval);
+        return;
+      }
+      const frame = replayData.byTime[replayData.timestamps[index]];
+      const updated = frame.map(entry => {
+        const d = drivers[entry.driver_number] || {};
+        return {
+          driver: entry.driver_number,
+          number: entry.driver_number,
+          name: d.name || `#${entry.driver_number}`,
+          short: d.short || `${entry.driver_number}`,
+          team: d.team || "",
+          color: d.color || "#ffffff",
+          x: entry.x,
+          y: entry.y,
+        };
       });
+      setCars(updated);
     }, 200);
-
     return () => clearInterval(interval);
-  }, [mode, replayData, drivers]);
+  }, [replayData, drivers]);
 
-  // STEP 6 — live feed loop
   function startLiveFeed(sessionKey, driverMap) {
     const interval = setInterval(() => {
       fetch(`https://api.openf1.org/v1/location?session_key=${sessionKey}&limit=100`)
@@ -197,7 +214,6 @@ export default function App() {
         .then(data => {
           const latest = {};
           data.forEach(e => { latest[e.driver_number] = e; });
-
           const updated = Object.values(latest).map(entry => {
             const d = driverMap[entry.driver_number] || {};
             return {
@@ -211,12 +227,10 @@ export default function App() {
               y: entry.y,
             };
           });
-
           setCars(updated);
         })
         .catch(() => {});
     }, 1500);
-
     return () => clearInterval(interval);
   }
 
@@ -233,47 +247,43 @@ export default function App() {
             </p>
           )}
         </div>
-
-        {/* MODE TOGGLE */}
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <span style={{ color: "#666", fontSize: 12 }}>
-            {status}
-          </span>
+          <span style={{ color: "#666", fontSize: 12 }}>{status}</span>
           <button
             onClick={() => setMode("replay")}
             style={{
-              padding: "8px 18px",
-              borderRadius: 20,
-              border: "none",
-              cursor: "pointer",
+              padding: "8px 18px", borderRadius: 20, border: "none", cursor: "pointer",
               background: mode === "replay" ? "#e8002d" : "#333",
-              color: "#fff",
-              fontWeight: "bold",
-              fontSize: 13,
+              color: "#fff", fontWeight: "bold", fontSize: 13,
             }}
-          >
-            REPLAY
-          </button>
+          >REPLAY</button>
           <button
             onClick={() => setMode("live")}
             style={{
-              padding: "8px 18px",
-              borderRadius: 20,
-              border: "none",
-              cursor: "pointer",
+              padding: "8px 18px", borderRadius: 20, border: "none", cursor: "pointer",
               background: mode === "live" ? "#00e676" : "#333",
               color: mode === "live" ? "#000" : "#fff",
-              fontWeight: "bold",
-              fontSize: 13,
+              fontWeight: "bold", fontSize: 13,
             }}
-          >
-            {liveSession ? "● LIVE" : "LIVE"}
-          </button>
+          >{liveSession ? "● LIVE" : "LIVE"}</button>
         </div>
       </div>
 
+      {/* DEBUG PANEL */}
+      <div style={{
+        background: "#0a0a0a", border: "1px solid #222", borderRadius: 8,
+        padding: 10, marginBottom: 16, fontFamily: "monospace", fontSize: 11,
+      }}>
+        <div style={{ color: "#e8002d", fontWeight: "bold", marginBottom: 4 }}>
+          DEBUG — {status}
+        </div>
+        {debugLog.map((l, i) => (
+          <div key={i} style={{ color: "#888" }}>{l}</div>
+        ))}
+      </div>
+
       {loading ? (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 400 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 300 }}>
           <p style={{ color: "#fff", fontSize: 18 }}>{status}</p>
         </div>
       ) : (

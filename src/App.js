@@ -5,42 +5,24 @@ export default function App() {
   const [cars, setCars] = useState([]);
 
   useEffect(() => {
-    // 🔥 DEMO MODE (so you see movement immediately)
     const interval = setInterval(() => {
       setCars([
-        {
-          driver: 44,
-          number: 44,
-          x: Math.random() * 900,
-          y: Math.random() * 500,
-          color: "red"
-        },
-        {
-          driver: 16,
-          number: 16,
-          x: Math.random() * 900,
-          y: Math.random() * 500,
-          color: "blue"
-        },
-        {
-          driver: 1,
-          number: 1,
-          x: Math.random() * 900,
-          y: Math.random() * 500,
-          color: "yellow"
-        }
+        { driver: 44, number: 44, x: Math.random() * 900, y: Math.random() * 500, color: "#e8002d" },
+        { driver: 16, number: 16, x: Math.random() * 900, y: Math.random() * 500, color: "#e8002d" },
+        { driver: 1,  number: 1,  x: Math.random() * 900, y: Math.random() * 500, color: "#3671c6" },
+        { driver: 11, number: 11, x: Math.random() * 900, y: Math.random() * 500, color: "#3671c6" },
+        { driver: 63, number: 63, x: Math.random() * 900, y: Math.random() * 500, color: "#27f4d2" },
+        { driver: 14, number: 14, x: Math.random() * 900, y: Math.random() * 500, color: "#ff8000" },
       ]);
     }, 1000);
-
     return () => clearInterval(interval);
   }, []);
 
   return (
-    <div style={{ padding: 20 }}>
-      <h2 style={{ textAlign: "center" }}>
-        🏁 F1 Live Dashboard (Step 7 Demo)
+    <div style={{ background: "#111", minHeight: "100vh", padding: 20 }}>
+      <h2 style={{ textAlign: "center", color: "#fff", fontFamily: "Arial", letterSpacing: 2 }}>
+        F1 Live Dashboard
       </h2>
-
       <Track cars={cars} />
     </div>
   );

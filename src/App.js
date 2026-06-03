@@ -1,331 +1,275 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Track from "./Track";
 import Leaderboard from "./Leaderboard";
 
+const API = "http://localhost:8000";
+
 const TEAM_COLORS = {
-  "Ferrari": "#e8002d",
+  Ferrari: "#e8002d",
   "Red Bull Racing": "#3671c6",
-  "Mercedes": "#27f4d2",
-  "McLaren": "#ff8000",
+  Mercedes: "#27f4d2",
+  McLaren: "#ff8000",
   "Aston Martin": "#358c75",
-  "Alpine": "#0093cc",
-  "Williams": "#64c4ff",
-  "RB": "#6692ff",
-  "Kick Sauber": "#52e252",
+  Alpine: "#0093cc",
+  Williams: "#64c4ff",
+  Cadillac: "#00c853",
+  Audi: "#9c27b0",
   "Haas F1 Team": "#b6babd",
+  "Racing Bulls": "#6692ff",
 };
 
 export default function App() {
-  const [cars, setCars] = useState([]);
+  const [track, setTrack] = useState([]);
   const [drivers, setDrivers] = useState({});
-  const [circuit, setCircuit] = useState(null);
-  const [mode, setMode] = useState("replay");
+  const [frames, setFrames] = useState([]);      // raw frames array
+  const [snapshots, setSnapshots] = useState([]); // grouped: [{timestamp, cars:[...]}, ...]
+  const [cars, setCars] = useState([]);
+  const [pitStops, setPitStops] = useState([]);
+  const [overtakes, setOvertakes] = useState([]);
+  const [race, setRace] = useState("");
+  const [circuitName, setCircuitName] = useState("");
+  const [circuitInfo, setCircuitInfo] = useState("");
+  const [playing, setPlaying] = useState(true);
+  const [speed, setSpeed] = useState(1);
+  const [snapIndex, setSnapIndex] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("Starting...");
-  const [debugLog, setDebugLog] = useState([]);
-  const [replayData, setReplayData] = useState({});
-  const [liveSession, setLiveSession] = useState(null);
-  const [liveChecked, setLiveChecked] = useState(false);
 
-  const log = (msg) => {
-    console.log(msg);
-    setDebugLog(prev => [...prev.slice(-10), msg]);
-  };
+  const driversRef = useRef({});
 
-  // STEP 1 — check for live session
   useEffect(() => {
-    log("Checking for live session...");
-    fetch("https://api.openf1.org/v1/sessions?session_type=Race&limit=5")
-      .then(r => r.json())
-      .then(data => {
-        // SAFE: make sure data is an array
-        const sessions = Array.isArray(data) ? data : [];
-        log(`Got ${sessions.length} sessions`);
-        const now = new Date();
-        const live = sessions.find(s => {
-          const start = new Date(s.date_start);
-          const end = new Date(s.date_end);
-          return now >= start && now <= end;
-        });
-        if (live) {
-          log(`Live session found: ${live.circuit_short_name}`);
-          setLiveSession(live);
-        } else {
-          log("No live session — using replay mode");
-        }
-      })
-      .catch(err => log(`Live check failed: ${err.message}`))
-      .finally(() => setLiveChecked(true));
-  }, []);
+    async function loadReplay() {
+      try {
+        const response = await fetch(`${API}/replay/latest`);
+        const data = await response.json();
 
-  // STEP 2 — only run after live check is done
-  useEffect(() => {
-    if (!liveChecked) return;
-    loadSession(mode);
-  // eslint-disable-next-line
-  }, [liveChecked, mode]);
-
-  function loadSession(targetMode) {
-    setLoading(true);
-
-    if (targetMode === "live" && liveSession) {
-      log(`Using live session: ${liveSession.session_key}`);
-      initSession(liveSession, "live");
-      return;
-    }
-
-    if (targetMode === "live" && !liveSession) {
-      log("No live session — falling back to replay");
-    }
-
-    log("Fetching last race from Jolpi...");
-    fetch("https://api.jolpi.ca/ergast/f1/current/last/results.json")
-      .then(r => r.json())
-      .then(jolpiData => {
-        const race = jolpiData?.MRData?.RaceTable?.Races?.[0];
-        log(`Jolpi race: ${race?.raceName || "not found"}`);
-        const circuitName = race?.Circuit?.circuitName || "Unknown Circuit";
-        const raceName = race?.raceName || "Last Race";
-
-        log("Fetching OpenF1 sessions...");
-        return fetch("https://api.openf1.org/v1/sessions?session_type=Race&limit=20")
-          .then(r => r.json())
-          .then(rawSessions => {
-            // SAFE: make sure it is an array
-            const sessions = Array.isArray(rawSessions) ? rawSessions : [];
-            log(`Got ${sessions.length} OpenF1 sessions`);
-
-            const completed = sessions
-              .filter(s => new Date(s.date_end) < new Date())
-              .sort((a, b) => new Date(b.date_end) - new Date(a.date_end));
-
-            const best = completed[0];
-            log(`Best session: ${best?.circuit_short_name} (key: ${best?.session_key})`);
-
-            if (best) {
-              best.circuitLabel = circuitName;
-              best.raceLabel = raceName;
-              best.jolpiResults = race?.Results || [];
-            }
-            return best;
-          });
-      })
-      .then(sessionData => {
-        if (sessionData) {
-          initSession(sessionData, "replay");
-        } else {
-          log("ERROR: No session data found");
-          setStatus("No session found");
-          setLoading(false);
-        }
-      })
-      .catch(err => {
-        log(`Load session error: ${err.message}`);
-        setStatus(`Error: ${err.message}`);
-        setLoading(false);
-      });
-  }
-
-  function initSession(sessionData, targetMode) {
-    log(`Loading drivers for session ${sessionData.session_key}...`);
-    setStatus("Loading drivers...");
-
-    fetch(`https://api.openf1.org/v1/drivers?session_key=${sessionData.session_key}`)
-      .then(r => r.json())
-      .then(rawDrivers => {
-        // SAFE: make sure it is an array
-        const driverList = Array.isArray(rawDrivers) ? rawDrivers : [];
-        log(`Got ${driverList.length} drivers`);
-
-        const map = {};
-        driverList.forEach(d => {
-          map[d.driver_number] = {
-            number: d.driver_number,
-            name: d.full_name,
-            short: d.name_acronym,
-            team: d.team_name,
-            color: TEAM_COLORS[d.team_name] || "#ffffff",
+        const driverMap = {};
+        (data.drivers || []).forEach(d => {
+          driverMap[d.number] = {
+            ...d,
+            color: TEAM_COLORS[d.team] || "#fff",
           };
         });
-        setDrivers(map);
-        setCircuit({
-          name: sessionData.circuitLabel || sessionData.circuit_short_name,
-          country: sessionData.country_name,
-          sessionKey: sessionData.session_key,
-        });
 
-        if (targetMode === "replay") {
-          loadReplayData(sessionData.session_key, map, sessionData.jolpiResults || []);
-        } else {
-          setLoading(false);
-          setStatus("LIVE");
-          startLiveFeed(sessionData.session_key, map);
-        }
-      })
-      .catch(err => {
-        log(`Drivers error: ${err.message}`);
+        driversRef.current = driverMap;
+        setDrivers(driverMap);
+        setTrack(data.track || []);
+        setFrames(data.frames || []);
+        setPitStops(data.pit_events || []);
+        setOvertakes(data.overtake_events || []);
+        setRace(data.race || "");
+        setCircuitName(data.circuit_name || data.race || "");
+        setCircuitInfo(data.circuit_info || "");
+
+        // Group frames by timestamp so all drivers move together
+        const grouped = groupFrames(data.frames || [], driverMap);
+        setSnapshots(grouped);
         setLoading(false);
-      });
-  }
-
-  function loadReplayData(sessionKey, driverMap, jolpiResults) {
-    log(`Loading positions for session ${sessionKey}...`);
-    setStatus("Loading race positions...");
-
-    fetch(`https://api.openf1.org/v1/location?session_key=${sessionKey}&limit=5000`)
-      .then(r => r.json())
-      .then(rawPositions => {
-        // SAFE: make sure it is an array
-        const positions = Array.isArray(rawPositions) ? rawPositions : [];
-        log(`Got ${positions.length} position entries`);
-
-        if (positions.length === 0) {
-          log("WARNING: No position data returned");
-          setStatus("No position data for this session");
-          setLoading(false);
-          return;
-        }
-
-        const byTime = {};
-        positions.forEach(p => {
-          if (!byTime[p.date]) byTime[p.date] = [];
-          byTime[p.date].push(p);
-        });
-        const timestamps = Object.keys(byTime).sort();
-        log(`${timestamps.length} timestamps — replay ready`);
-        setReplayData({ byTime, timestamps, jolpiResults });
+      } catch (err) {
+        console.error("Failed to load replay:", err);
         setLoading(false);
-        setStatus("REPLAY");
-      })
-      .catch(err => {
-        log(`Positions error: ${err.message}`);
-        setLoading(false);
-      });
-  }
-
-  // replay loop
-  useEffect(() => {
-    if (mode !== "replay" || !replayData.timestamps?.length) return;
-    let index = 0;
-    const interval = setInterval(() => {
-      index++;
-      if (index >= replayData.timestamps.length) {
-        clearInterval(interval);
-        log("Replay finished");
-        return;
       }
-      const frame = replayData.byTime[replayData.timestamps[index]];
-      const updated = frame.map(entry => {
-        const d = drivers[entry.driver_number] || {};
-        return {
-          driver: entry.driver_number,
-          number: entry.driver_number,
-          name: d.name || `#${entry.driver_number}`,
-          short: d.short || `${entry.driver_number}`,
-          team: d.team || "",
-          color: d.color || "#ffffff",
-          x: entry.x,
-          y: entry.y,
-        };
-      });
-      setCars(updated);
-    // eslint-disable-next-line
-    }, 200);
-    return () => clearInterval(interval);
-  }, [replayData, drivers]);
+    }
+    loadReplay();
+  }, []);
 
-  function startLiveFeed(sessionKey, driverMap) {
-    const interval = setInterval(() => {
-      fetch(`https://api.openf1.org/v1/location?session_key=${sessionKey}&limit=100`)
-        .then(r => r.json())
-        .then(rawData => {
-          const data = Array.isArray(rawData) ? rawData : [];
-          const latest = {};
-          data.forEach(e => { latest[e.driver_number] = e; });
-          const updated = Object.values(latest).map(entry => {
-            const d = driverMap[entry.driver_number] || {};
-            return {
-              driver: entry.driver_number,
-              number: entry.driver_number,
-              name: d.name || `#${entry.driver_number}`,
-              short: d.short || `${entry.driver_number}`,
-              team: d.team || "",
-              color: d.color || "#ffffff",
-              x: entry.x,
-              y: entry.y,
-            };
-          });
-          setCars(updated);
-        })
-        .catch(() => {});
-    }, 1500);
-    return () => clearInterval(interval);
-  }
+  // Playback ticker
+  useEffect(() => {
+    if (!playing || !snapshots.length) return;
+    const timer = setInterval(() => {
+      setSnapIndex(prev => {
+        const next = prev + speed;
+        return next >= snapshots.length ? 0 : next;
+      });
+    }, 50);
+    return () => clearInterval(timer);
+  }, [playing, speed, snapshots]);
+
+  // Update cars from snapshot
+  useEffect(() => {
+    if (!snapshots.length) return;
+    const snap = snapshots[Math.floor(snapIndex)];
+    if (snap) setCars(snap.cars);
+  }, [snapIndex, snapshots]);
+
+  const totalSnaps = snapshots.length;
+  const progress = totalSnaps ? (snapIndex / totalSnaps) * 100 : 0;
+  const currentSnap = snapshots[Math.floor(snapIndex)];
+  const currentLap = currentSnap?.lap || 1;
+  const totalLaps = snapshots.length ? (snapshots[snapshots.length - 1]?.lap || 70) : 70;
 
   return (
-    <div style={{ background: "#111", minHeight: "100vh", padding: 20, fontFamily: "Arial" }}>
+    <div style={{
+      background: "#060910",
+      minHeight: "100vh",
+      color: "white",
+      padding: 20,
+      fontFamily: "'Courier New', monospace",
+    }}>
 
-      {/* HEADER */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-        <div>
-          <h2 style={{ color: "#fff", margin: 0, letterSpacing: 2 }}>F1 Live Dashboard</h2>
-          {circuit && (
-            <p style={{ color: "#888", margin: "4px 0 0", fontSize: 13 }}>
-              {circuit.name} — {circuit.country}
-            </p>
-          )}
-        </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <span style={{ color: "#666", fontSize: 12 }}>{status}</span>
-          <button
-            onClick={() => setMode("replay")}
-            style={{
-              padding: "8px 18px", borderRadius: 20, border: "none", cursor: "pointer",
-              background: mode === "replay" ? "#e8002d" : "#333",
-              color: "#fff", fontWeight: "bold", fontSize: 13,
-            }}
-          >REPLAY</button>
-          <button
-            onClick={() => setMode("live")}
-            style={{
-              padding: "8px 18px", borderRadius: 20, border: "none", cursor: "pointer",
-              background: mode === "live" ? "#00e676" : "#333",
-              color: mode === "live" ? "#000" : "#fff",
-              fontWeight: "bold", fontSize: 13,
-            }}
-          >{liveSession ? "● LIVE" : "LIVE"}</button>
-        </div>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 16, marginBottom: 8 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, letterSpacing: "0.08em", color: "#e2e8f0" }}>
+          F1 RACE REPLAY
+        </h1>
+        <span style={{ fontSize: 13, color: "#475569", letterSpacing: "0.04em" }}>{race}</span>
       </div>
 
-      {/* DEBUG PANEL */}
-      <div style={{
-        background: "#0a0a0a", border: "1px solid #222", borderRadius: 8,
-        padding: 10, marginBottom: 16, fontFamily: "monospace", fontSize: 11,
-      }}>
-        <div style={{ color: "#e8002d", fontWeight: "bold", marginBottom: 4 }}>
-          DEBUG — {status}
-        </div>
-        {debugLog.map((l, i) => (
-          <div key={i} style={{ color: l.includes("ERROR") || l.includes("error") ? "#ff4444" : "#888" }}>
-            {l}
-          </div>
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "center" }}>
+        <button onClick={() => setPlaying(!playing)} style={btnStyle("#22c55e")}>
+          {playing ? "⏸ PAUSE" : "▶ PLAY"}
+        </button>
+        {[1, 2, 4].map(s => (
+          <button key={s} onClick={() => setSpeed(s)}
+            style={btnStyle(speed === s ? "#f59e0b" : "#334155")}>
+            ×{s}
+          </button>
         ))}
+        <span style={{ fontSize: 11, color: "#475569", marginLeft: 8, letterSpacing: "0.06em" }}>
+          LAP <span style={{ color: "#94a3b8" }}>{currentLap}</span> / {totalLaps}
+        </span>
       </div>
 
-      {loading ? (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 300 }}>
-          <p style={{ color: "#fff", fontSize: 18 }}>{status}</p>
+      {/* Progress bar */}
+      <div style={{ width: "100%", height: 4, background: "#1e2530", borderRadius: 2, marginBottom: 18 }}>
+        <div style={{
+          width: `${progress}%`, height: "100%",
+          background: "linear-gradient(90deg, #22c55e, #00ff88)",
+          borderRadius: 2, transition: "width 0.05s linear",
+        }} />
+      </div>
+
+      {loading && (
+        <div style={{ color: "#334155", fontSize: 13, marginTop: 60, textAlign: "center", letterSpacing: "0.1em" }}>
+          LOADING RACE DATA...
         </div>
-      ) : (
-        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-          <Track cars={cars} />
-          <Leaderboard
-            cars={cars}
-            jolpiResults={replayData.jolpiResults || []}
-            mode={mode}
-          />
+      )}
+
+      {!loading && (
+        <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Track
+              track={track}
+              cars={cars}
+              circuitName={circuitName}
+              circuitInfo={circuitInfo}
+              lapInfo={`LAP ${currentLap}/${totalLaps}`}
+            />
+          </div>
+
+          <div style={{ width: 260, flexShrink: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+            <Leaderboard
+              cars={cars}
+              results={[]}
+              drivers={drivers}
+              mode="replay"
+            />
+
+            <div style={panelStyle}>
+              <div style={panelHeaderStyle}>PIT STOPS</div>
+              <div style={{ maxHeight: 140, overflowY: "auto", padding: "4px 0" }}>
+                {pitStops.slice(0, 20).map((p, i) => (
+                  <div key={i} style={eventRowStyle}>
+                    <span style={{ color: "#eab308" }}>LAP {p.lap}</span>
+                    <span style={{ color: "#475569" }}>·</span>
+                    <span style={{ color: "#94a3b8" }}>CAR {p.driver}</span>
+                  </div>
+                ))}
+                {!pitStops.length && <div style={{ color: "#334155", fontSize: 11, padding: "8px 14px" }}>No pit stops</div>}
+              </div>
+            </div>
+
+            <div style={panelStyle}>
+              <div style={panelHeaderStyle}>OVERTAKES</div>
+              <div style={{ maxHeight: 200, overflowY: "auto", padding: "4px 0" }}>
+                {overtakes.slice(0, 30).map((o, i) => (
+                  <div key={i} style={eventRowStyle}>
+                    <span style={{ color: "#a855f7" }}>LAP {o.lap}</span>
+                    <span style={{ color: "#475569" }}>·</span>
+                    <span style={{ color: "#94a3b8" }}>CAR {o.driver}</span>
+                    <span style={{ color: "#475569" }}>P{o.from}→P{o.to}</span>
+                  </div>
+                ))}
+                {!overtakes.length && <div style={{ color: "#334155", fontSize: 11, padding: "8px 14px" }}>No overtakes</div>}
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
 }
+
+/**
+ * Group raw frames (one entry per driver per timestamp) into snapshots
+ * where every snapshot contains ALL drivers at that moment.
+ *
+ * Your API returns frames like: [{driver, x, y, lap, timestamp}, ...]
+ * We group by timestamp so all drivers move together.
+ */
+function groupFrames(frames, driverMap) {
+  if (!frames.length) return [];
+
+  // Group by timestamp (or by sequential index if no timestamp)
+  const byTime = {};
+  frames.forEach(f => {
+    const key = f.timestamp ?? f.t ?? f.index ?? frames.indexOf(f);
+    if (!byTime[key]) byTime[key] = { lap: f.lap || 1, cars: [] };
+    const driver = driverMap[f.driver] || {};
+    byTime[key].cars.push({
+      driver: f.driver,
+      number: f.driver,
+      short: driver.short || `#${f.driver}`,
+      name: driver.name || driver.short || `Car ${f.driver}`,
+      team: driver.team || "",
+      color: driver.color || "#fff",
+      x: f.x,
+      y: f.y,
+    });
+  });
+
+  // Sort by key and return as array
+  return Object.keys(byTime)
+    .sort((a, b) => Number(a) - Number(b))
+    .map(k => byTime[k]);
+}
+
+const btnStyle = (color) => ({
+  background: "transparent",
+  border: `1px solid ${color}`,
+  color,
+  padding: "5px 14px",
+  borderRadius: 6,
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: "pointer",
+  letterSpacing: "0.08em",
+  fontFamily: "'Courier New', monospace",
+});
+
+const panelStyle = {
+  background: "#0d1117",
+  borderRadius: 10,
+  border: "1px solid #1e2530",
+  overflow: "hidden",
+};
+
+const panelHeaderStyle = {
+  background: "#111827",
+  padding: "8px 14px",
+  borderBottom: "1px solid #1e2530",
+  fontSize: 10,
+  fontWeight: 700,
+  color: "#475569",
+  letterSpacing: "0.1em",
+};
+
+const eventRowStyle = {
+  display: "flex",
+  gap: 8,
+  padding: "4px 14px",
+  fontSize: 11,
+  borderBottom: "1px solid #0d1117",
+  fontFamily: "'Courier New', monospace",
+};

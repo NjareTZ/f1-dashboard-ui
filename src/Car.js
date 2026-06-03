@@ -1,30 +1,28 @@
 export default function Car({ driver }) {
   return (
     <div
-      title={`${driver.name || driver.short} — ${driver.team}`}
+      title={`${driver.name} (${driver.team})`}
       style={{
         position: "absolute",
         left: driver.screenX,
         top: driver.screenY,
-        width: 24,
-        height: 24,
+        width: 18,
+        height: 18,
         borderRadius: "50%",
         backgroundColor: driver.color || "#fff",
-        color: "white",
+        color: "#fff",
         fontSize: 8,
         fontWeight: "bold",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         transform: "translate(-50%, -50%)",
-        boxShadow: `0 0 10px ${driver.color || "#fff"}`,
-        zIndex: 10,
-        transition: "left 0.2s ease, top 0.2s ease",
-        cursor: "pointer",
-        border: "2px solid rgba(255,255,255,0.2)",
+        border: "1.5px solid rgba(255,255,255,.3)",
+        zIndex: 100,
+        transition: "left .15s linear, top .15s linear",
       }}
     >
-      {driver.short || driver.number}
+      {driver.number}
     </div>
   );
 }
